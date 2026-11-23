@@ -6,7 +6,7 @@ import {
   Plus, Send, ShieldCheck, Sparkles, UserRound, Users, X
 } from "lucide-react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-import { api, signOut } from "./api.js";
+import { api, apiUrl, signOut } from "./api.js";
 
 const specialties = ["Nursing", "Business", "Computer Science", "Law", "Literature", "Engineering", "General"];
 const citationStyles = ["APA", "MLA", "Harvard", "Chicago", "IEEE"];
@@ -582,7 +582,7 @@ function AdminPage() {
   const headers = { "Content-Type": "application/json", "x-admin-secret": secret };
 
   async function loadGigs() {
-    const response = await fetch("/api/admin/gigs", { headers });
+    const response = await fetch(apiUrl("/api/admin/gigs"), { headers });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || "Could not load gigs.");
     setGigs(data.gigs);
@@ -608,7 +608,7 @@ function AdminPage() {
   async function createGig(event) {
     event.preventDefault();
     setError("");
-    const response = await fetch("/api/admin/gigs", { method: "POST", headers, body: JSON.stringify(form) });
+    const response = await fetch(apiUrl("/api/admin/gigs"), { method: "POST", headers, body: JSON.stringify(form) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) { setError(data.error || "Could not create gig."); return; }
     setGigs([data.gig, ...gigs]);
@@ -619,14 +619,14 @@ function AdminPage() {
 
   async function toggleGig(gig) {
     const status = gig.status === "open" ? "taken" : "open";
-    const response = await fetch(`/api/admin/gigs/${gig.id}`, { method: "PATCH", headers, body: JSON.stringify({ status }) });
+    const response = await fetch(apiUrl(`/api/admin/gigs/${gig.id}`), { method: "PATCH", headers, body: JSON.stringify({ status }) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) { setError(data.error || "Could not update gig."); return; }
     setGigs(gigs.map((item) => item.id === gig.id ? data.gig : item));
   }
 
   async function showApplicants(gigId) {
-    const response = await fetch(`/api/admin/gigs/${gigId}/applicants`, { headers });
+    const response = await fetch(apiUrl(`/api/admin/gigs/${gigId}/applicants`), { headers });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) { setError(data.error || "Could not load applicants."); return; }
     setApplicants({ ...applicants, [gigId]: data.applicants });
