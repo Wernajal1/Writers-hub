@@ -24,10 +24,12 @@ A React/Vite writer community with an Express API and PostgreSQL persistence.
 
 5. To prepare a production build, run `npm run build`, then start the API with `npm start`. The API serves `frontend/dist` when that directory exists.
 
+For separate production deployments, set `VITE_API_URL` in the Vercel frontend build to the backend's HTTPS origin, and set `FRONTEND_ORIGIN` on the backend to the Vercel site origin. Configure the HarakaHaraka callback URL against the backend origin, not the frontend URL.
+
 ## External service setup
 
 - **Formspree:** `FORMSPREE_ENDPOINT` is configured in `.env.example`. The API records each application in PostgreSQL first, then sends a notification. If notification delivery fails, the application remains recorded and the API reports that separately.
-- **TinyPesa:** payment initiation and confirmation are intentionally unavailable until its API documentation, credentials, signing/verification requirements, and callback format are provided. The activation API returns an explicit `503`; it does not pretend a payment succeeded. The provider adapter is in `backend/src/tinypesa.js`.
+- **HarakaHaraka:** configure `LIPAHARAKA_API_KEY`, `LIPAHARAKA_CHANNEL_ID`, and a long random `LIPAHARAKA_WEBHOOK_SECRET` in the backend environment. Keep the API key and webhook secret out of the frontend and source control. Configure the provider's STK payment callback to `https://<backend-host>/api/payments/callback?secret=<LIPAHARAKA_WEBHOOK_SECRET>`. The callback endpoint checks the secret, matches the checkout request ID, verifies the KES 80 amount, and processes each payment once. The adapter is in `backend/src/harakaharaka.js`.
 
 ## Routes
 

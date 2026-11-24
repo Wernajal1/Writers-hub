@@ -17,7 +17,7 @@ import {
   requirePaymentSession,
   requireSurvey
 } from "./auth.js";
-import { initiateTinyPesaPayment } from "./tinypesa.js";
+import { initiateHarakaPayment } from "./harakaharaka.js";
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -27,7 +27,23 @@ const allowedSpecialties = new Set([
 const allowedCitations = new Set(["APA", "MLA", "Harvard", "Chicago", "IEEE"]);
 const phonePattern = /^254(?:7|1)\d{8}$/;
 
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || "http://localhost:5173" }));
+const configuredOrigins = String(process.env.FRONTEND_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  ...configuredOrigins
+]);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(new Error("Origin is not allowed by CORS."));
+  }
+}));
 app.use(express.json({ limit: "100kb" }));
 app.use((req, _res, next) => {
   req.body ||= {};
@@ -155,15 +171,10 @@ app.post("/api/payments/start", requirePaymentSession, loadCurrentUser, async (r
       req.user.phone_number = phoneNumber;
     }
 
-    const checkout = await initiateTinyPesaPayment({
+    const checkout = await initiateHarakaPayment({
       amount: 80,
-      phoneNumber,
-      accountReference: `WRITER-${req.user.id}`,
-      description: "Writers Hub activation"
+      phoneNumber
     });
-    if (!checkout?.checkoutRequestId) {
-      return res.status(502).json({ error: "TinyPesa did not return a checkout request ID." });
-    }
     await pool.query(
       `INSERT INTO payments (user_id, checkout_request_id, merchant_request_id, amount)
        VALUES ($1, $2, $3, 80)`,
@@ -201,10 +212,77 @@ app.get("/api/payments/account", requirePaymentSession, loadCurrentUser, (req, r
   res.json({ user: req.user, paymentStatus: "pending" });
 });
 
-app.post("/api/payments/callback", (_req, res) => {
-  res.status(501).json({
-    error: "TinyPesa callback verification is not configured. Share the TinyPesa API contract before enabling payment confirmation."
-  });
+app.post("/api/payments/callback", async (req, res, next) => {
+  const expectedSecret = process.env.LIPAHARAKA_WEBHOOK_SECRET;
+  const providedSecret = req.query.secret;
+  if (!expectedSecret) {
+    return res.status(503).json({ error: "Payment callback authentication is not configured." });
+  }
+  if (typeof providedSecret !== "string") {
+    return res.status(401).json({ error: "Payment callback authorization required." });
+  }
+  const expectedBuffer = Buffer.from(expectedSecret);
+  const providedBuffer = Buffer.from(providedSecret);
+  const secretMatches = expectedBuffer.length === providedBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, providedBuffer);
+  if (!secretMatches) {
+    return res.status(401).json({ error: "Payment callback authorization required." });
+  }
+
+  const { event, checkout_request_id: checkoutRequestId, status } = req.body;
+  if (event !== "payment.updated" || typeof checkoutRequestId !== "string"
+    || !checkoutRequestId || !["completed", "failed", "cancelled"].includes(status)) {
+    return res.status(400).json({ error: "Invalid payment callback." });
+  }
+  if (status === "completed" && (Number(req.body.amount) !== 80
+    || typeof req.body.receipt !== "string" || !req.body.receipt.trim())) {
+    return res.status(400).json({ error: "Payment callback does not match the activation amount." });
+  }
+
+  let client;
+  try {
+    client = await pool.connect();
+    await client.query("BEGIN");
+    const paymentResult = await client.query(
+      `SELECT id, user_id, amount, status FROM payments
+       WHERE checkout_request_id = $1 FOR UPDATE`,
+      [checkoutRequestId]
+    );
+    if (!paymentResult.rowCount) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Payment request not found." });
+    }
+
+    const payment = paymentResult.rows[0];
+    if (payment.status !== "pending") {
+      await client.query("COMMIT");
+      return res.json({ received: true });
+    }
+    if (status === "completed" && Number(payment.amount) !== Number(req.body.amount)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Payment amount does not match the payment request." });
+    }
+
+    const completed = status === "completed";
+    await client.query(
+      `UPDATE payments SET status = $1, mpesa_receipt_number = $2
+       WHERE id = $3 AND status = 'pending'`,
+      [completed ? "completed" : "failed", completed ? req.body.receipt.trim() : null, payment.id]
+    );
+    if (completed) {
+      await client.query(
+        "UPDATE users SET payment_status = 'paid', mpesa_receipt = $1 WHERE id = $2",
+        [req.body.receipt.trim(), payment.user_id]
+      );
+    }
+    await client.query("COMMIT");
+    res.json({ received: true });
+  } catch (error) {
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client?.release();
+  }
 });
 
 app.get("/api/profile", requireAuth, loadCurrentUser, requirePaid, (req, res) => {
